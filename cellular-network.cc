@@ -24,6 +24,7 @@
 #include <cmath>
 #include <filesystem>
 #include <algorithm>
+#include <vector>
 // ns3 specific
 #include "ns3/antenna-module.h"
 #include "ns3/applications-module.h"
@@ -89,8 +90,18 @@ void CellularNetwork(const Parameters& params)
     
     // Create user created trace files with corresponding column names
     CreateTraceFiles ();
-    
-    uint16_t vrTraceFileIndex = 0;
+
+    std::vector<std::string> vrTraceFiles;
+    const std::string fpsToken = "_" + std::to_string(params.vrTraceFps) + "fps";
+    for (const auto& fileName : params.vrTraceFiles)
+    {
+        if (fileName.find(fpsToken) != std::string::npos)
+        {
+            vrTraceFiles.push_back(fileName);
+        }
+    }
+    NS_ABORT_MSG_IF(vrTraceFiles.empty(),
+                    "No VR trace files match the requested FPS (" << params.vrTraceFps << ")");
     
     /****************************************************
     * UE and gNodeB creation
@@ -360,6 +371,8 @@ void CellularNetwork(const Parameters& params)
     Ptr<UniformRandomVariable> vrStart = CreateObject<UniformRandomVariable> ();
     vrStart->SetAttribute ("Min", DoubleValue (params.vrStartTimeMin));
     vrStart->SetAttribute ("Max", DoubleValue (params.vrStartTimeMax));
+    Ptr<UniformRandomVariable> vrTracePicker = CreateObject<UniformRandomVariable> ();
+    vrTracePicker->SetStream (RngSeedManager::GetRun () + 100);
     
     // Server Creation 
     if(params.traceDelay)
@@ -466,14 +479,15 @@ void CellularNetwork(const Parameters& params)
             // Random sample for the start time fo the VR session for each UE  
             double vrStartTime = vrStart->GetValue();
             // The sender of VR traffic to be installed on remoteHost
-            std::string vrTraceFile = params.vrTraceFiles[vrTraceFileIndex];
+            const uint32_t traceIdx =
+                vrTracePicker->GetInteger(0, static_cast<int>(vrTraceFiles.size()) - 1);
+            const std::string& vrTraceFile = vrTraceFiles[traceIdx];
             BurstyHelper burstyHelper ("ns3::UdpSocketFactory", 
                                        InetSocketAddress (remoteHostAddr, vrPortNum)); 
             burstyHelper.SetAttribute ("FragmentSize", UintegerValue (1200));
             burstyHelper.SetBurstGenerator ("ns3::TraceFileBurstGenerator", 
                                             "TraceFile", StringValue (params.traceFolder + vrTraceFile), 
                                             "StartTime", DoubleValue (vrStartTime));
-            vrTraceFileIndex = (vrTraceFileIndex + 1)%8;
             serverApps.Add (burstyHelper.Install (node));
             std::cout << " VR trace file " << vrTraceFile << " scheduled at t="
                       << vrStartTime << "s for UE IMSI " << GetImsi_from_node(node) << std::endl;

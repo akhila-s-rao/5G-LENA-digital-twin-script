@@ -68,6 +68,9 @@ main (int argc, char *argv[])
     cmd.AddValue("numUesWithVrApp",
                  "The number of UEs that should run the VR/XR application in uplink",
                  params.numUesWithVrApp);
+    cmd.AddValue("vrTraceFps",
+                 "Frame rate (30 or 60 fps) of the VR trace files to replay",
+                 params.vrTraceFps);
     cmd.AddValue ("appGenerationTime",
                 "Duration applications will generate traffic.",
                 params.appGenerationTime);

@@ -106,6 +106,7 @@ struct Parameters
 
     // VR
     uint16_t numUesWithVrApp = 1;
+    uint16_t vrTraceFps = 60; // allowed values: 30 or 60
     double vrStartTimeMin = 2;
     double vrStartTimeMax = 5;
 
@@ -128,6 +129,8 @@ struct Parameters
     // Validate whether the parameters set are acceptable
     bool Validate () const
     {
+        NS_ABORT_MSG_IF(vrTraceFps != 30 && vrTraceFps != 60,
+                        "vrTraceFps must be either 30 or 60");
         return true;
     }
 };

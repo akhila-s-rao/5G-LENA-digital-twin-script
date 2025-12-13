@@ -329,8 +329,10 @@ void CellularNetwork(const Parameters& params)
     /****************************************************
     * Install Internet for all Nodes
     *****************************************************/
-    auto [remoteHost, remoteHostAddr] =
+    auto [remoteHost, pgwAddress] =
         nrEpcHelper->SetupRemoteHost("100Gb/s", 2500, Seconds(0.000));
+    Ptr<Ipv4> remoteHostIpv4 = remoteHost->GetObject<Ipv4>();
+    Ipv4Address remoteHostAddr = remoteHostIpv4->GetAddress(1, 0).GetLocal();
 
     InternetStackHelper internet;
     internet.Install(ueNodes);
@@ -464,14 +466,17 @@ void CellularNetwork(const Parameters& params)
             // Random sample for the start time fo the VR session for each UE  
             double vrStartTime = vrStart->GetValue();
             // The sender of VR traffic to be installed on remoteHost
+            std::string vrTraceFile = params.vrTraceFiles[vrTraceFileIndex];
             BurstyHelper burstyHelper ("ns3::UdpSocketFactory", 
                                        InetSocketAddress (remoteHostAddr, vrPortNum)); 
             burstyHelper.SetAttribute ("FragmentSize", UintegerValue (1200));
             burstyHelper.SetBurstGenerator ("ns3::TraceFileBurstGenerator", 
-                                            "TraceFile", StringValue (params.traceFolder + params.vrTraceFiles[vrTraceFileIndex]), 
+                                            "TraceFile", StringValue (params.traceFolder + vrTraceFile), 
                                             "StartTime", DoubleValue (vrStartTime));
             vrTraceFileIndex = (vrTraceFileIndex + 1)%8;
             serverApps.Add (burstyHelper.Install (node));
+            std::cout << " VR trace file " << vrTraceFile << " scheduled at t="
+                      << vrStartTime << "s for UE IMSI " << GetImsi_from_node(node) << std::endl;
             // The receiver of the VR traffic to be installed on remote host
             clientApps.Add (burstSinkHelper.Install (remoteHost));
             // Print the IMSI of the ues that are doing this	
@@ -519,6 +524,8 @@ void CellularNetwork(const Parameters& params)
         {
             Config::Connect ("/NodeList/*/ApplicationList/*/$ns3::UdpEchoClient/RxWithAddresses", 
                              MakeBoundCallback (&rttTrace, rttStream));
+            Config::Connect ("/NodeList/*/ApplicationList/*/$ns3::UdpEchoClient/TxWithAddresses",
+                             MakeCallback (&RttTxTrace));
         }
         if(params.traceVr)
         {

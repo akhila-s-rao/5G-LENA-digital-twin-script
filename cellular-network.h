@@ -21,6 +21,7 @@
 #include <string>
 #include <ostream>
 #include <vector>
+#include <unordered_map>
 #include "ns3/core-module.h"
 #include "ns3/config-store.h"
 #include "ns3/network-module.h"
@@ -84,7 +85,7 @@ struct Parameters
     bool UseIdealRrc = true;
     
     // Buffer sizes 
-    uint32_t rlcTxBuffSize = 10 * 1024; // default is 10240 
+    uint32_t rlcTxBuffSize = 200 * 1024; // default is 10240 
     uint32_t tcpUdpBuffSize = 500 * 1024; // default is 131072
 
     // position and mobility model
@@ -153,6 +154,9 @@ Ptr<OutputStreamWrapper> fragmentRxStream;
 Ptr<OutputStreamWrapper> burstRxStream;
 Ptr<OutputStreamWrapper> ueGroupsStream;
 Ptr<OutputStreamWrapper> simInfoStream;
+std::unordered_map<uint64_t, Time> g_rttTxTimeByPacketUid;
+std::unordered_map<uint64_t, uint32_t> g_rttSeqByPacketUid;
+std::unordered_map<uint16_t, uint32_t> g_rttNextSeqPerUe;
 #else
 extern NodeContainer gnbNodes;
 extern NodeContainer ueNodes;
@@ -166,6 +170,9 @@ extern Ptr<OutputStreamWrapper> fragmentRxStream;
 extern Ptr<OutputStreamWrapper> burstRxStream;
 extern Ptr<OutputStreamWrapper> ueGroupsStream;
 extern Ptr<OutputStreamWrapper> simInfoStream;
+extern std::unordered_map<uint64_t, Time> g_rttTxTimeByPacketUid;
+extern std::unordered_map<uint64_t, uint32_t> g_rttSeqByPacketUid;
+extern std::unordered_map<uint16_t, uint32_t> g_rttNextSeqPerUe;
 #endif
 
 
@@ -198,6 +205,10 @@ void delayTrace (Ptr<OutputStreamWrapper> stream,
 void rttTrace (Ptr<OutputStreamWrapper> stream,
                 std::string context, 
                 Ptr<const Packet> packet, const Address &from, const Address &localAddress);
+void RttTxTrace (std::string context,
+                 Ptr<const Packet> packet,
+                 const Address& localAddress,
+                 const Address& remoteAddress);
 void BurstRx (Ptr<OutputStreamWrapper> stream,
                 std::string context, Ptr<const Packet> burst, const Address &from, const Address &to,
          const SeqTsSizeFragHeader &header);
@@ -459,7 +470,15 @@ rttTrace(Ptr<OutputStreamWrapper> stream,
 {
     Ptr<Packet> packetCopy = packet->Copy();
     SeqTsHeader seqTs;
-    packetCopy->RemoveHeader(seqTs);
+    bool hasSeqTs = packetCopy->PeekHeader(seqTs);
+    uint32_t seqNum = 0;
+    Time txTime = Seconds(0);
+    if (hasSeqTs)
+    {
+        packetCopy->RemoveHeader(seqTs);
+        seqNum = seqTs.GetSeq();
+        txTime = seqTs.GetTs();
+    }
     const auto ids = MakeUeTraceIdsFromContext(context);
 
     if (!InetSocketAddress::IsMatchingType(from))
@@ -467,11 +486,43 @@ rttTrace(Ptr<OutputStreamWrapper> stream,
         return;
     }
 
+    const uint64_t uid = packetCopy->GetUid();
+    auto txIt = g_rttTxTimeByPacketUid.find(uid);
+    if (txIt != g_rttTxTimeByPacketUid.end())
+    {
+        txTime = txIt->second;
+        g_rttTxTimeByPacketUid.erase(txIt);
+    }
+    auto seqIt = g_rttSeqByPacketUid.find(uid);
+    if (seqIt != g_rttSeqByPacketUid.end())
+    {
+        seqNum = seqIt->second;
+        g_rttSeqByPacketUid.erase(seqIt);
+    }
+
     *stream->GetStream() << Simulator::Now().GetMicroSeconds() << "\t" << ids.ueId << "\t"
                          << ids.imsi << "\t" << ids.cellId << "\t" << packetCopy->GetSize()
-                         << "\t" << seqTs.GetSeq() << "\t" << packetCopy->GetUid() << "\t"
-                         << seqTs.GetTs().GetMicroSeconds() << "\t"
-                         << (Simulator::Now() - seqTs.GetTs()).GetMicroSeconds() << std::endl;
+                         << "\t" << seqNum << "\t" << uid << "\t" << txTime.GetMicroSeconds()
+                         << "\t" << (Simulator::Now() - txTime).GetMicroSeconds() << std::endl;
+}
+
+void
+RttTxTrace(std::string context,
+           Ptr<const Packet> packet,
+           const Address& localAddress,
+           const Address& remoteAddress)
+{
+    const uint16_t nodeId = GetNodeIdFromContext(context);
+    if (nodeId < gnbNodes.GetN() || nodeId >= (gnbNodes.GetN() + ueNodes.GetN()))
+    {
+        return;
+    }
+    const uint16_t ueId = GetUeIdFromNodeId(nodeId);
+    uint32_t& nextSeq = g_rttNextSeqPerUe[ueId];
+    const uint32_t seqNum = nextSeq++;
+    const uint64_t uid = packet->GetUid();
+    g_rttTxTimeByPacketUid[uid] = Simulator::Now();
+    g_rttSeqByPacketUid[uid] = seqNum;
 }
 
 void
@@ -480,7 +531,23 @@ BurstRx (Ptr<OutputStreamWrapper> stream, std::string context,
          const SeqTsSizeFragHeader &header)
 {
     std::cout << "BurstRx callback" << std::endl;
-    const auto ids = MakeUeTraceIdsFromContext(context);
+    uint16_t ueId = 0;
+    const uint16_t nodeId = GetNodeIdFromContext(context);
+    if (nodeId >= gnbNodes.GetN () && nodeId < (gnbNodes.GetN () + ueNodes.GetN ()))
+    {
+        // Burst sink installed directly on a UE (downlink VR traffic)
+        ueId = GetUeIdFromNodeId(nodeId);
+    }
+    else
+    {
+        // Burst sink installed elsewhere (e.g., remote host) so the packet came from a UE
+        if (!InetSocketAddress::IsMatchingType(from))
+        {
+            return;
+        }
+        ueId = GetUeNodeIdFromIpAddr(from, &ueNodes, &ueIpIfaces);
+    }
+    const auto ids = MakeUeTraceIds(ueId);
     Time now = Simulator::Now ();
     *stream->GetStream()
         << now.GetMicroSeconds () //tstamp_us
@@ -498,7 +565,21 @@ FragmentRx (Ptr<OutputStreamWrapper> stream, std::string context,
             Ptr<const Packet> fragment, const Address &from, const Address &to,
          const SeqTsSizeFragHeader &header)
 {
-    const auto ids = MakeUeTraceIdsFromContext(context);
+    uint16_t ueId = 0;
+    const uint16_t nodeId = GetNodeIdFromContext(context);
+    if (nodeId >= gnbNodes.GetN () && nodeId < (gnbNodes.GetN () + ueNodes.GetN ()))
+    {
+        ueId = GetUeIdFromNodeId(nodeId);
+    }
+    else
+    {
+        if (!InetSocketAddress::IsMatchingType(from))
+        {
+            return;
+        }
+        ueId = GetUeNodeIdFromIpAddr(from, &ueNodes, &ueIpIfaces);
+    }
+    const auto ids = MakeUeTraceIds(ueId);
     Time now = Simulator::Now ();
     *stream->GetStream()
         << now.GetMicroSeconds () //tstamp_us

@@ -1,0 +1,95 @@
+mobility_trace.txt
+tstamp_us, ueId, IMSI, cellId, pos_x, pos_y, pos_z, vel_x, vel_y, vel_z
+
+delay_trace.txt
+tstamp_us, dir, ueId, IMSI, cellId, pktSize, seqNum, pktUid, txTstamp_us, delay
+
+rtt_trace.txt
+tstamp_us, ueId, IMSI, cellId, pktSize, seqNum, pktUid, txTstamp_us, delay
+
+vrFragment_trace.txt
+tstamp_us, ueId, IMSI, cellId, burstSeqNum, burstSize, numFragsInBurst, fragSeqNum, txTstamp_us, delay
+
+vrBurst_trace.txt
+tstamp_us, ueId, IMSI, cellId, burstSeqNum, burstSize, numFragsInBurst
+
+DlCtrlSinr.txt
+Time, CellId, RNTI, BWPId, SINR(dB)
+
+DlDataSinr.txt
+Time, CellId, RNTI, BWPId, SINR(dB)
+
+DlPathlossTrace.txt
+Time(sec), CellId, BwpId, IMSI, pathLoss(dB)
+
+UlPathlossTrace.txt
+Time(sec), CellId, BwpId, IMSI, pathLoss(dB)
+
+NrDlMacStats.txt
+time(s), cellId, bwpId, IMSI, RNTI, frame, subframe, slot, symStart, numSym, harqId, ndi, rv, mcs, tbSize
+
+NrUlMacStats.txt
+time(s), cellId, bwpId, IMSI, RNTI, frame, subframe, slot, symStart, numSym, harqId, ndi, rv, mcs, tbSize
+
+NrDlPdcpTxStats.txt
+time(s), cellId, rnti, lcid, packetSize
+
+NrDlPdcpRxStats.txt
+time(s), cellId, rnti, lcid, packetSize, delay(s)
+
+NrDlPdcpStatsE2E.txt
+start(s), end(s), CellId, IMSI, RNTI, LCID, nTxPDUs, TxBytes, nRxPDUs, RxBytes, delay(s), stdDev(s), min(s), max(s), PduSize, stdDev, min, max
+
+NrUlPdcpTxStats.txt
+time(s), cellId, rnti, lcid, packetSize
+
+NrUlPdcpRxStats.txt
+time(s), cellId, rnti, lcid, packetSize, delay(s)
+
+NrUlPdcpStatsE2E.txt
+start(s), end(s), CellId, IMSI, RNTI, LCID, nTxPDUs, TxBytes, nRxPDUs, RxBytes, delay(s), stdDev(s), min(s), max(s), PduSize, stdDev, min, max
+
+NrDlTxRlcStats.txt
+time(s), cellId, rnti, lcid, packetSize
+
+NrDlRxRlcStats.txt
+time(s), cellId, rnti, lcid, packetSize, delay(s)
+
+NrDlRlcStatsE2E.txt
+start(s), end(s), CellId, IMSI, RNTI, LCID, nTxPDUs, TxBytes, nRxPDUs, RxBytes, delay(s), stdDev(s), min(s), max(s), PduSize, stdDev, min, max
+
+NrUlRlcTxStats.txt
+time(s), cellId, rnti, lcid, packetSize
+
+NrUlRlcRxStats.txt
+time(s), cellId, rnti, lcid, packetSize, delay(s)
+
+NrUlRlcStatsE2E.txt
+start(s), end(s), CellId, IMSI, RNTI, LCID, nTxPDUs, TxBytes, nRxPDUs, RxBytes, delay(s), stdDev(s), min(s), max(s), PduSize, stdDev, min, max
+
+RxPacketTrace.txt
+Time, direction, frame, subframe, slot, firstSymbol, nSymbol, cellId, bwpId, rnti, tbSize, mcs, rank, rv, SINR(dB), CQI, corrupt, TBler
+
+RxedGnbMacCtrlMsgsTrace.txt
+Time, Entity, Frame, Subframe, Slot, VarTTI, nodeId, RNTI, bwpId, MsgType
+
+RxedGnbPhyCtrlMsgsTrace.txt
+Time, Entity, Frame, Subframe, Slot, nodeId, RNTI, bwpId, MsgType
+
+RxedUeMacCtrlMsgsTrace.txt
+Time, Entity, Frame, Subframe, Slot, VarTTI, nodeId, RNTI, bwpId, MsgType
+
+RxedUePhyCtrlMsgsTrace.txt
+Time, Entity, Frame, Subframe, Slot, nodeId, RNTI, bwpId, MsgType
+
+RxedUePhyDlDciTrace.txt
+Time, Entity, Frame, Subframe, Slot, nodeId, RNTI, bwpId, HarqID, K1 Delay
+
+TxedGnbPhyCtrlMsgsTrace.txt
+Time, Entity, Frame, Subframe, Slot, nodeId, RNTI, bwpId, MsgType
+
+TxedUeMacCtrlMsgsTrace.txt
+Time, Entity, Frame, Subframe, Slot, VarTTI, nodeId, RNTI, bwpId, MsgType
+
+TxedUePhyCtrlMsgsTrace.txt
+Time, Entity, Frame, Subframe, Slot, nodeId, RNTI, bwpId, MsgType

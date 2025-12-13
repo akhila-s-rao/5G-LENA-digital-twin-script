@@ -24,33 +24,7 @@
  */
 using namespace ns3;
 
-/**
- * \ingroup examples
- * \file lena-lte-comparison-user.cc
- * \brief A multi-cell network deployment with site sectorization
- *
- * This example describes how to setup a simulation using the 3GPP channel model
- * from TR 38.900. This example consists of an hexagonal grid deployment
- * consisting on a central site and a number of outer rings of sites around this
- * central site. Each site is sectorized, meaning that a number of three antenna
- * arrays or panels are deployed per gNB. These three antennas are pointing to
- * 30º, 150º and 270º w.r.t. the horizontal axis. We allocate a band to each
- * sector of a site, and the bands are contiguous in frequency.
- *
- * We provide a number of simulation parameters that can be configured in the
- * command line, such as the number of UEs per cell or the number of outer rings.
- * Please have a look at the possible parameters to know what you can configure
- * through the command line.
- *
- * With the default configuration, the example will install uplink and downlink
-* delay probes on each UE. Additional application mixes (VR, RTT,
- * throughput probes) can be enabled through the command-line arguments.
- *
- * \code{.unparsed}
-$ ./waf --run "lena-lte-comparison-user --Help"
-    \endcode
- *
- */
+
 int
 main (int argc, char *argv[])
 {
@@ -62,15 +36,26 @@ main (int argc, char *argv[])
     */
     CommandLine cmd;
 
- 
+    cmd.AddValue("digitalTwinScenario",
+                 "Digital twin preset to use (expeca or 5gsmart)",
+                 params.digitalTwinScenario);
     cmd.AddValue("numUes", 
                 "The number of UEs per cell", params.numUes);
     cmd.AddValue("numUesWithVrApp",
                  "The number of UEs that should run the VR/XR application in uplink",
                  params.numUesWithVrApp);
-    cmd.AddValue("vrTraceFps",
-                 "Frame rate (30 or 60 fps) of the VR trace files to replay",
-                 params.vrTraceFps);
+    cmd.AddValue("vrTrafficType",
+                 "VR traffic generator to use: trace, synthetic, or none",
+                 params.vrTrafficType);
+    cmd.AddValue("vrFrameRate",
+                 "Frame rate (30 or 60 fps) used by the VR traffic",
+                 params.vrFrameRate);
+    cmd.AddValue("vrTargetDataRateMbps",
+                 "Target data rate in Mbps (used for synthetic VR traffic)",
+                 params.vrTargetDataRateMbps);
+    cmd.AddValue("vrAppProfile",
+                 "Synthetic VR application profile (VirusPopper, Minecraft, GoogleEarthVrCities, GoogleEarthVrTour)",
+                 params.vrAppProfile);
     cmd.AddValue ("appGenerationTime",
                 "Duration applications will generate traffic.",
                 params.appGenerationTime);
@@ -94,6 +79,8 @@ main (int argc, char *argv[])
                  params.createRemMap);
     // Parse the command line
     cmd.Parse (argc, argv);
+    params.ApplyScenarioDefaults();
+    params.traceVr = (params.vrTrafficType != "none");
     params.Validate ();
 
     std::cout << params;

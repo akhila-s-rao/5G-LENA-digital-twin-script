@@ -22,6 +22,8 @@
 #include <ostream>
 #include <vector>
 #include <unordered_map>
+#include <algorithm>
+#include <cctype>
 #include "ns3/core-module.h"
 #include "ns3/config-store.h"
 #include "ns3/network-module.h"
@@ -55,6 +57,7 @@ struct Parameters
     friend std::ostream& operator<< (std::ostream& os, const Parameters& parameters);
 
     std::string ns3Dir = "/home/ubuntu/ns-3-dev/";
+    std::string digitalTwinScenario = "expeca";
 
     // Deployment topology parameters
     uint16_t numUes = 3;
@@ -73,6 +76,7 @@ struct Parameters
     // Table 7.8-1 for the power and BW).
     // This example uses a single operational band/BWP
     uint16_t numerologyBwp1 = 1;
+    std::string channelScenario = "InH-OfficeOpen";
     double centralFrequencyBand = 3.5e9;
     double bandwidthHz = 40e6;
     // the pattern length needs to be as long as the number of slots in a 10 ms frame
@@ -100,15 +104,28 @@ struct Parameters
     bool traceDelay = true;
     bool traceRtt = true;
     bool traceVr = true;
+    std::string traceFolder = ns3Dir + "contrib/vr-app/model/BurstGeneratorTraces/";
+    std::vector<std::string> vrTraceFiles {
+        "mc_10mbps_30fps.csv",
+        "ge_cities_10mbps_30fps.csv",
+        "ge_tour_10mbps_30fps.csv",
+        "vp_10mbps_30fps.csv",
+        "mc_10mbps_60fps.csv",
+        "ge_cities_10mbps_60fps.csv",
+        "ge_tour_10mbps_60fps.csv",
+        "vp_10mbps_60fps.csv"};
+    std::string vrTrafficType = "synthetic"; // trace, synthetic, none
+    uint16_t vrFrameRate = 30;           // allowed: 30 or 60
+    double vrTargetDataRateMbps = 10.0;
+    std::string vrAppProfile = "VirusPopper";
     bool createRemMap = false;
     uint8_t vrBearerQci = NrEpsBearer::NGBR_LOW_LAT_EMBB;
     uint8_t controlBearerQci = NrEpsBearer::DGBR_DISCRETE_AUT_LARGE;
 
     // VR
     uint16_t numUesWithVrApp = 1;
-    uint16_t vrTraceFps = 60; // allowed values: 30 or 60
-    double vrStartTimeMin = 2;
-    double vrStartTimeMax = 5;
+    double vrStartTimeMin = 1;
+    double vrStartTimeMax = 3;
 
     // UDP one way delay probes
     uint32_t delayPacketSize = 1400;
@@ -118,19 +135,59 @@ struct Parameters
     uint32_t echoPacketSize = 1400;
     Time echoInterPacketInterval = Seconds (0.1);
 
-    // Recorded traces to play for the VR app can be found here
-    std::string traceFolder = ns3Dir + "contrib/vr-app/model/BurstGeneratorTraces/";
-
-    // Trace file names for VR     
-    std::string vrTraceFiles[8]
-        = {"mc_10mbps_30fps.csv", "ge_cities_10mbps_30fps.csv", "ge_tour_10mbps_30fps.csv", "vp_10mbps_30fps.csv", 
-        "mc_10mbps_60fps.csv", "ge_cities_10mbps_60fps.csv", "ge_tour_10mbps_60fps.csv", "vp_10mbps_60fps.csv"};
+    void ApplyScenarioDefaults()
+    {
+        std::string scenario = digitalTwinScenario;
+        std::transform(scenario.begin(), scenario.end(), scenario.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (scenario == "expeca")
+        {
+            digitalTwinScenario = "expeca";
+            return;
+        }
+        // Add here if you want a parameter to be part of the scenario specific setting
+        if (scenario == "5gsmart")
+        {
+            digitalTwinScenario = "5gsmart";
+            channelScenario = "InH-OfficeMixed";
+            BsHeight = 0.0;
+            ueHeight = 0.0;
+            numerologyBwp1 = 0;
+            centralFrequencyBand = 0.0;
+            bandwidthHz = 0.0;
+            tddPattern.clear();
+            BsTxPower = 0;
+            enableUlPc = false;
+            NumberOfRaPreambles = 0;
+            boundingBoxMinX = 0.0; 
+            boundingBoxMaxX = 0.0;
+            boundingBoxMinY = 0.0;
+            boundingBoxMaxY = 0.0;
+            vrBearerQci = 0;
+            controlBearerQci = 0;
+            return;
+        }
+        NS_ABORT_MSG("Unknown digital twin scenario: " << digitalTwinScenario);
+    }
 
     // Validate whether the parameters set are acceptable
     bool Validate () const
     {
-        NS_ABORT_MSG_IF(vrTraceFps != 30 && vrTraceFps != 60,
-                        "vrTraceFps must be either 30 or 60");
+        NS_ABORT_MSG_IF(!(vrTrafficType == "trace" || vrTrafficType == "synthetic" ||
+                          vrTrafficType == "none"),
+                        "vrTrafficType must be 'trace', 'synthetic', or 'none'");
+        if (vrTrafficType == "trace")
+        {
+            NS_ABORT_MSG_IF(vrFrameRate != 30 && vrFrameRate != 60,
+                            "Trace VR frame rate must be 30 or 60 fps");
+        }
+        if (vrTrafficType == "synthetic")
+        {
+            NS_ABORT_MSG_IF(vrFrameRate != 30 && vrFrameRate != 60,
+                            "Synthetic VR frame rate must be 30 or 60 fps");
+            NS_ABORT_MSG_IF(vrTargetDataRateMbps <= 0.0,
+                            "Synthetic VR target data rate must be positive");
+        }
         return true;
     }
 };
@@ -157,9 +214,8 @@ Ptr<OutputStreamWrapper> fragmentRxStream;
 Ptr<OutputStreamWrapper> burstRxStream;
 Ptr<OutputStreamWrapper> ueGroupsStream;
 Ptr<OutputStreamWrapper> simInfoStream;
-std::unordered_map<uint64_t, Time> g_rttTxTimeByPacketUid;
-std::unordered_map<uint64_t, uint32_t> g_rttSeqByPacketUid;
 std::unordered_map<uint16_t, uint32_t> g_rttNextSeqPerUe;
+std::unordered_map<uint32_t, uint16_t> g_nodeIdToUeId;
 #else
 extern NodeContainer gnbNodes;
 extern NodeContainer ueNodes;
@@ -173,9 +229,8 @@ extern Ptr<OutputStreamWrapper> fragmentRxStream;
 extern Ptr<OutputStreamWrapper> burstRxStream;
 extern Ptr<OutputStreamWrapper> ueGroupsStream;
 extern Ptr<OutputStreamWrapper> simInfoStream;
-extern std::unordered_map<uint64_t, Time> g_rttTxTimeByPacketUid;
-extern std::unordered_map<uint64_t, uint32_t> g_rttSeqByPacketUid;
 extern std::unordered_map<uint16_t, uint32_t> g_rttNextSeqPerUe;
+extern std::unordered_map<uint32_t, uint16_t> g_nodeIdToUeId;
 #endif
 
 
@@ -208,10 +263,10 @@ void delayTrace (Ptr<OutputStreamWrapper> stream,
 void rttTrace (Ptr<OutputStreamWrapper> stream,
                 std::string context, 
                 Ptr<const Packet> packet, const Address &from, const Address &localAddress);
-void RttTxTrace (std::string context,
-                 Ptr<const Packet> packet,
-                 const Address& localAddress,
-                 const Address& remoteAddress);
+void StampEchoClientPacket(uint16_t ueId,
+                           Ptr<const Packet> packet,
+                           const Address& local,
+                           const Address& remote);
 void BurstRx (Ptr<OutputStreamWrapper> stream,
                 std::string context, Ptr<const Packet> burst, const Address &from, const Address &to,
          const SeqTsSizeFragHeader &header);
@@ -279,8 +334,10 @@ MakeUeTraceIdsFromContext(const std::string& context)
 uint16_t
 GetUeIdFromNodeId(uint16_t nodeId)
 {
-    NS_ABORT_IF(nodeId < gnbNodes.GetN());
-    return nodeId - gnbNodes.GetN();
+    auto it = g_nodeIdToUeId.find(nodeId);
+    NS_ABORT_MSG_IF(it == g_nodeIdToUeId.end(),
+                    "NodeId " << nodeId << " does not correspond to a UE");
+    return it->second;
 }
 
 uint16_t
@@ -473,59 +530,34 @@ rttTrace(Ptr<OutputStreamWrapper> stream,
 {
     Ptr<Packet> packetCopy = packet->Copy();
     SeqTsHeader seqTs;
-    bool hasSeqTs = packetCopy->PeekHeader(seqTs);
-    uint32_t seqNum = 0;
-    Time txTime = Seconds(0);
-    if (hasSeqTs)
+    if (!packetCopy->PeekHeader(seqTs))
     {
-        packetCopy->RemoveHeader(seqTs);
-        seqNum = seqTs.GetSeq();
-        txTime = seqTs.GetTs();
+        return;
     }
+    packetCopy->RemoveHeader(seqTs);
     const auto ids = MakeUeTraceIdsFromContext(context);
-
     if (!InetSocketAddress::IsMatchingType(from))
     {
         return;
     }
-
-    const uint64_t uid = packetCopy->GetUid();
-    auto txIt = g_rttTxTimeByPacketUid.find(uid);
-    if (txIt != g_rttTxTimeByPacketUid.end())
-    {
-        txTime = txIt->second;
-        g_rttTxTimeByPacketUid.erase(txIt);
-    }
-    auto seqIt = g_rttSeqByPacketUid.find(uid);
-    if (seqIt != g_rttSeqByPacketUid.end())
-    {
-        seqNum = seqIt->second;
-        g_rttSeqByPacketUid.erase(seqIt);
-    }
-
     *stream->GetStream() << Simulator::Now().GetMicroSeconds() << "\t" << ids.ueId << "\t"
-                         << ids.imsi << "\t" << ids.cellId << "\t" << packetCopy->GetSize()
-                         << "\t" << seqNum << "\t" << uid << "\t" << txTime.GetMicroSeconds()
-                         << "\t" << (Simulator::Now() - txTime).GetMicroSeconds() << std::endl;
+                         << ids.imsi << "\t" << ids.cellId << "\t" << packetCopy->GetSize() << "\t"
+                         << seqTs.GetSeq() << "\t" << packetCopy->GetUid() << "\t"
+                         << seqTs.GetTs().GetMicroSeconds() << "\t"
+                         << (Simulator::Now() - seqTs.GetTs()).GetMicroSeconds() << std::endl;
 }
 
 void
-RttTxTrace(std::string context,
-           Ptr<const Packet> packet,
-           const Address& localAddress,
-           const Address& remoteAddress)
+StampEchoClientPacket(uint16_t ueId,
+                      Ptr<const Packet> packet,
+                      const Address& local,
+                      const Address& remote)
 {
-    const uint16_t nodeId = GetNodeIdFromContext(context);
-    if (nodeId < gnbNodes.GetN() || nodeId >= (gnbNodes.GetN() + ueNodes.GetN()))
-    {
-        return;
-    }
-    const uint16_t ueId = GetUeIdFromNodeId(nodeId);
+    SeqTsHeader header;
     uint32_t& nextSeq = g_rttNextSeqPerUe[ueId];
-    const uint32_t seqNum = nextSeq++;
-    const uint64_t uid = packet->GetUid();
-    g_rttTxTimeByPacketUid[uid] = Simulator::Now();
-    g_rttSeqByPacketUid[uid] = seqNum;
+    header.SetSeq(nextSeq++);
+    auto rawPacket = const_cast<Packet*>(PeekPointer(packet));
+    rawPacket->AddHeader(header);
 }
 
 void
@@ -533,7 +565,6 @@ BurstRx (Ptr<OutputStreamWrapper> stream, std::string context,
          Ptr<const Packet> burst, const Address &from, const Address &to,
          const SeqTsSizeFragHeader &header)
 {
-    std::cout << "BurstRx callback" << std::endl;
     uint16_t ueId = 0;
     const uint16_t nodeId = GetNodeIdFromContext(context);
     if (nodeId >= gnbNodes.GetN () && nodeId < (gnbNodes.GetN () + ueNodes.GetN ()))

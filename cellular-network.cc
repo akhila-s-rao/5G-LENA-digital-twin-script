@@ -42,12 +42,15 @@
 #include "ns3/point-to-point-module.h"
 #include <ns3/radio-environment-map-helper.h>
 #include <iomanip>
+#include <cctype>
 #include "ns3/log.h"
 // ns3 VR app
 #include "ns3/seq-ts-size-frag-header.h"
 #include "ns3/bursty-helper.h"
 #include "ns3/burst-sink-helper.h"
 #include "ns3/trace-file-burst-generator.h"
+#include "ns3/vr-burst-generator.h"
+#include "ns3/data-rate.h"
 
 #define CELLULAR_NETWORK_IMPLEMENTATION
 #include "cellular-network.h"
@@ -58,6 +61,38 @@ NS_LOG_COMPONENT_DEFINE ("CellularNetwork");
 
 
 namespace ns3 {
+
+namespace {
+
+VrBurstGenerator::VrAppName
+GetVrAppNameFromString(const std::string& appName)
+{
+    std::string normalized;
+    normalized.reserve(appName.size());
+    for (char c : appName)
+    {
+        normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (normalized == "viruspopper")
+    {
+        return VrBurstGenerator::VirusPopper;
+    }
+    if (normalized == "minecraft")
+    {
+        return VrBurstGenerator::Minecraft;
+    }
+    if (normalized == "googleearthvrcities" || normalized == "ge_cities")
+    {
+        return VrBurstGenerator::GoogleEarthVrCities;
+    }
+    if (normalized == "googleearthvrtour" || normalized == "ge_tour")
+    {
+        return VrBurstGenerator::GoogleEarthVrTour;
+    }
+    NS_ABORT_MSG("Unknown synthetic VR app name: " << appName);
+}
+
+} // unnamed namespace
 
     
 // Call this function with params containing all the parameters to setup the simulation
@@ -91,17 +126,23 @@ void CellularNetwork(const Parameters& params)
     // Create user created trace files with corresponding column names
     CreateTraceFiles ();
 
+    const bool useTraceVr = (params.vrTrafficType == "trace");
+    const bool useSyntheticVr = (params.vrTrafficType == "synthetic");
+
     std::vector<std::string> vrTraceFiles;
-    const std::string fpsToken = "_" + std::to_string(params.vrTraceFps) + "fps";
-    for (const auto& fileName : params.vrTraceFiles)
+    if (useTraceVr && params.numUesWithVrApp > 0)
     {
-        if (fileName.find(fpsToken) != std::string::npos)
+        const std::string fpsToken = "_" + std::to_string(params.vrFrameRate) + "fps";
+        for (const auto& fileName : params.vrTraceFiles)
         {
-            vrTraceFiles.push_back(fileName);
+            if (fileName.find(fpsToken) != std::string::npos)
+            {
+                vrTraceFiles.push_back(fileName);
+            }
         }
+        NS_ABORT_MSG_IF(vrTraceFiles.empty(),
+                        "No VR trace files match the requested FPS (" << params.vrFrameRate << ")");
     }
-    NS_ABORT_MSG_IF(vrTraceFiles.empty(),
-                    "No VR trace files match the requested FPS (" << params.vrTraceFps << ")");
     
     /****************************************************
     * UE and gNodeB creation
@@ -112,6 +153,11 @@ void CellularNetwork(const Parameters& params)
 
     ueNodes = NodeContainer();
     ueNodes.Create(params.numUes);
+    g_nodeIdToUeId.clear();
+    for (uint32_t ueIdx = 0; ueIdx < ueNodes.GetN(); ++ueIdx)
+    {
+        g_nodeIdToUeId.emplace(ueNodes.Get(ueIdx)->GetId(), ueIdx);
+    }
 
 
     /*********************************************************
@@ -208,13 +254,13 @@ void CellularNetwork(const Parameters& params)
      */
 
     Ptr<NrChannelHelper> channelHelper = CreateObject<NrChannelHelper>();
-    channelHelper->ConfigureFactories("InH-OfficeOpen", "Default", "ThreeGpp"); // factory-like indoor scenario
+    channelHelper->ConfigureFactories(params.channelScenario, "Default", "ThreeGpp");
     /**
      * Use channelHelper API to define the attributes for the channel model (condition, pathloss and
      * spectrum)
      */
     channelHelper->SetChannelConditionModelAttribute("UpdatePeriod", TimeValue(MilliSeconds(0)));
-    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
+    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(true));
     channelHelper->AssignChannelsToBands({band});
     allBwps = CcBwpCreator::GetAllBwps({band});
 
@@ -395,6 +441,14 @@ void CellularNetwork(const Parameters& params)
     //vr
     BurstSinkHelper burstSinkHelper ("ns3::UdpSocketFactory",
                                    InetSocketAddress (Ipv4Address::GetAny (), vrPortNum));
+    bool vrSinkInstalled = false;
+    auto ensureVrSink = [&]() {
+        if (!vrSinkInstalled)
+        {
+            serverApps.Add(burstSinkHelper.Install(remoteHost));
+            vrSinkInstalled = true;
+        }
+    };
     
     // Client Config
     if(params.traceDelay)
@@ -415,10 +469,7 @@ void CellularNetwork(const Parameters& params)
         echoClient.SetAttribute ("Interval", TimeValue (params.echoInterPacketInterval));
         echoClient.SetAttribute ("PacketSize", UintegerValue (params.echoPacketSize));
     }
-    if(params.traceVr)
-    {
-        // Nothing to configure
-    }
+    // VR traffic uses custom helpers configured per UE
 
     // Client Creation on the desired devices
     Ptr<UniformRandomVariable> startRng = CreateObject<UniformRandomVariable> ();
@@ -426,10 +477,19 @@ void CellularNetwork(const Parameters& params)
 
     
     const uint32_t totalUes = ueNodes.GetN();
-    const uint32_t totalVrUes = params.traceVr
-                                    ? std::min<uint32_t>(params.numUesWithVrApp, totalUes)
-                                    : 0;
+    const uint32_t totalVrUes =
+        (useTraceVr || useSyntheticVr)
+            ? std::min<uint32_t>(params.numUesWithVrApp, totalUes)
+            : 0;
     const uint32_t vrStartIndex = (totalVrUes == 0) ? totalUes : (totalUes - totalVrUes);
+    DataRate syntheticVrRate(0);
+    VrBurstGenerator::VrAppName syntheticVrApp = VrBurstGenerator::VirusPopper;
+    if (useSyntheticVr && totalVrUes > 0)
+    {
+        syntheticVrRate = DataRate(
+            static_cast<uint64_t>(params.vrTargetDataRateMbps * 1e6));
+        syntheticVrApp = GetVrAppNameFromString(params.vrAppProfile);
+    }
 
     /***********************************************
     * Iterate through UEs and install apps 
@@ -444,8 +504,9 @@ void CellularNetwork(const Parameters& params)
         Ptr<NetDevice> ueDevice = ueNetDevs.Get(ueId);
 
         nrHelper->ActivateDedicatedEpsBearer(ueDevice, ctrlBearer, ctrlTft);
-        const bool isVrUe = (totalVrUes > 0 && ueId >= vrStartIndex);
-        if (isVrUe)
+        const bool isTraceVrUe = (useTraceVr && ueId >= vrStartIndex);
+        const bool isSyntheticVrUe = (useSyntheticVr && ueId >= vrStartIndex);
+        if (isTraceVrUe || isSyntheticVrUe)
         {
             nrHelper->ActivateDedicatedEpsBearer(ueDevice, vrBearer, vrTft);
         }
@@ -473,8 +534,18 @@ void CellularNetwork(const Parameters& params)
                               params.appStartTime,
                               startRng, params.appGenerationTime);
             clientApps.Add (appType1.first);
+            for (auto app = appType1.first.Begin(); app != appType1.first.End(); ++app)
+            {
+                Ptr<UdpEchoClient> echo = DynamicCast<UdpEchoClient>(*app);
+                if (echo != nullptr)
+                {
+                    echo->TraceConnectWithoutContext(
+                        "TxWithAddresses",
+                        MakeBoundCallback(&StampEchoClientPacket, ueId));
+                }
+            }
         } 
-        if (isVrUe) 
+        if (isTraceVrUe) 
         {
             // Random sample for the start time fo the VR session for each UE  
             double vrStartTime = vrStart->GetValue();
@@ -489,14 +560,30 @@ void CellularNetwork(const Parameters& params)
                                             "TraceFile", StringValue (params.traceFolder + vrTraceFile), 
                                             "StartTime", DoubleValue (vrStartTime));
             serverApps.Add (burstyHelper.Install (node));
+            ensureVrSink();
             std::cout << " VR trace file " << vrTraceFile << " scheduled at t="
                       << vrStartTime << "s for UE IMSI " << GetImsi_from_node(node) << std::endl;
-            // The receiver of the VR traffic to be installed on remote host
-            clientApps.Add (burstSinkHelper.Install (remoteHost));
             // Print the IMSI of the ues that are doing this	
             std::cout << " IMSI: " << GetImsi_from_node(node) 
                 << " Ip_addr: " << addr 
                 << " has VR app installed " << std::endl;
+            continue;
+        }
+        if (isSyntheticVrUe)
+        {
+            double vrStartTime = vrStart->GetValue();
+            BurstyHelper burstyHelper("ns3::UdpSocketFactory",
+                                      InetSocketAddress(remoteHostAddr, vrPortNum));
+            burstyHelper.SetAttribute("FragmentSize", UintegerValue(1200));
+            burstyHelper.SetBurstGenerator("ns3::VrBurstGenerator",
+                                           "FrameRate", DoubleValue(params.vrFrameRate),
+                                           "TargetDataRate", DataRateValue(syntheticVrRate),
+                                           "VrAppName", EnumValue(syntheticVrApp));
+            serverApps.Add(burstyHelper.Install(node));
+            ensureVrSink();
+            std::cout << " Synthetic VR app (" << params.vrAppProfile
+                      << ") scheduled at t=" << vrStartTime << "s for UE IMSI "
+                      << GetImsi_from_node(node) << std::endl;
             continue;
         }
     } // end of for over UEs
@@ -538,8 +625,6 @@ void CellularNetwork(const Parameters& params)
         {
             Config::Connect ("/NodeList/*/ApplicationList/*/$ns3::UdpEchoClient/RxWithAddresses", 
                              MakeBoundCallback (&rttTrace, rttStream));
-            Config::Connect ("/NodeList/*/ApplicationList/*/$ns3::UdpEchoClient/TxWithAddresses",
-                             MakeCallback (&RttTxTrace));
         }
         if(params.traceVr)
         {

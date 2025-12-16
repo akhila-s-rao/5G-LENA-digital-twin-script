@@ -38,6 +38,7 @@
 #include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
 #include "ns3/nr-module.h"
+#include "ns3/nr-phy-rx-trace.h"
 #include "ns3/nr-radio-environment-map-helper.h"
 #include "ns3/point-to-point-module.h"
 #include <ns3/radio-environment-map-helper.h>
@@ -222,7 +223,15 @@ void CellularNetwork(const Parameters& params)
     Ptr<RealisticBeamformingHelper> beamformingHelper = CreateObject<RealisticBeamformingHelper>();
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
 
-    // Put the pointers inside nrHelper
+    // Enable full MIMO CSI feedback (PDSCH, CSI-RS, CSI-IM) so that the PHY reports RI>1 and
+    // the scheduler can multiplex multiple spatial layers when the channel allows it.
+    /*nrHelper->SetAttribute("CsiFeedbackFlags",
+                           UintegerValue(CqiFeedbackFlag::CQI_PDSCH_MIMO |
+                                         CqiFeedbackFlag::CQI_CSI_RS |
+                                         CqiFeedbackFlag::CQI_CSI_IM));
+    // Limit the precoding search to at most 1 layer (rank 1) to keep the configuration consistent
+    // with the number of UE antenna rows/columns selected below.
+    nrHelper->SetPmSearchAttribute("RankLimit", UintegerValue(2));*/
     nrHelper->SetBeamformingHelper(beamformingHelper);
     nrHelper->SetGnbBeamManagerTypeId(RealisticBfManager::GetTypeId());
     nrHelper->SetGnbBeamManagerAttribute("TriggerEvent",
@@ -598,6 +607,15 @@ void CellularNetwork(const Parameters& params)
     if (params.traces == true) 
     {
           nrHelper->EnableTraces ();
+          Config::Connect("/NodeList/*/DeviceList/*/BandwidthPartMap/*/NrGnbPhy/UlSinrTrace",
+                          MakeBoundCallback(&NrPhyRxTrace::UlSinrTraceCallback,
+                                            nrHelper->GetPhyRxTrace()));
+          Config::Connect("/NodeList/*/DeviceList/*/BandwidthPartMap/*/NrGnbPhy/SpectrumPhy/TxPacketTraceGnb",
+                          MakeBoundCallback(&TxPacketTraceCallback, txPacketTraceStream));
+          Config::Connect("/NodeList/*/DeviceList/*/ComponentCarrierMapUe/*/NrUePhy/ReportUeMeasurements",
+                          MakeBoundCallback(&RsrpRsrqTraceCallback, rsrpRsrqStream));
+          Config::Connect("/NodeList/*/DeviceList/*/BandwidthPartMap/*/NrGnbMac/GnbMacRxedCtrlMsgsTrace",
+                          MakeBoundCallback(&GnbBsrTrace, gnbBsrStream));
     }
 
     // enable packet tracing from the application layer 

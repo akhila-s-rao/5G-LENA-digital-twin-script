@@ -44,6 +44,9 @@
 #include "ns3/seq-ts-size-frag-header.h"
 #include <iomanip>
 #include "ns3/log.h"
+#include "ns3/nr-phy-mac-common.h"
+#include "ns3/nr-control-messages.h"
+#include "ns3/nr-common.h"
 
 #ifndef CELLULAR_NETWORK_FUNCTION_H
 #define CELLULAR_NETWORK_FUNCTION_H
@@ -214,6 +217,9 @@ Ptr<OutputStreamWrapper> fragmentRxStream;
 Ptr<OutputStreamWrapper> burstRxStream;
 Ptr<OutputStreamWrapper> ueGroupsStream;
 Ptr<OutputStreamWrapper> simInfoStream;
+Ptr<OutputStreamWrapper> txPacketTraceStream;
+Ptr<OutputStreamWrapper> rsrpRsrqStream;
+Ptr<OutputStreamWrapper> gnbBsrStream;
 std::unordered_map<uint16_t, uint32_t> g_rttNextSeqPerUe;
 std::unordered_map<uint32_t, uint16_t> g_nodeIdToUeId;
 #else
@@ -229,6 +235,9 @@ extern Ptr<OutputStreamWrapper> fragmentRxStream;
 extern Ptr<OutputStreamWrapper> burstRxStream;
 extern Ptr<OutputStreamWrapper> ueGroupsStream;
 extern Ptr<OutputStreamWrapper> simInfoStream;
+extern Ptr<OutputStreamWrapper> txPacketTraceStream;
+extern Ptr<OutputStreamWrapper> rsrpRsrqStream;
+extern Ptr<OutputStreamWrapper> gnbBsrStream;
 extern std::unordered_map<uint16_t, uint32_t> g_rttNextSeqPerUe;
 extern std::unordered_map<uint32_t, uint16_t> g_nodeIdToUeId;
 #endif
@@ -256,6 +265,17 @@ void udpServerTrace(std::pair<uint16_t, uint16_t> DelayPortNums,
                 std::string context,
                 Ptr<const Packet> packet, 
                const Address &from, const Address &localAddress);
+void TxPacketTraceCallback(Ptr<OutputStreamWrapper> stream,
+                           std::string context,
+                           GnbPhyPacketCountParameter param);
+void RsrpRsrqTraceCallback(Ptr<OutputStreamWrapper> stream,
+                           std::string context,
+                           uint16_t rnti,
+                           uint16_t measuredCellId,
+                           double rsrp,
+                           double rsrq,
+                           bool isServingCell,
+                           uint8_t bwpId);
 void delayTrace (Ptr<OutputStreamWrapper> stream,
                 const Ptr<Node> &remoteHost,
                 std::string context,
@@ -273,6 +293,13 @@ void BurstRx (Ptr<OutputStreamWrapper> stream,
 void FragmentRx (Ptr<OutputStreamWrapper> stream,
                 std::string context, Ptr<const Packet> fragment, const Address &from, const Address &to,
          const SeqTsSizeFragHeader &header);    
+void GnbBsrTrace(Ptr<OutputStreamWrapper> stream,
+                 std::string path,
+                 const SfnSf sfn,
+                 uint16_t nodeId,
+                 uint16_t rnti,
+                 uint8_t bwpId,
+                 Ptr<const NrControlMessage> msg);
     
     
 std::pair<ApplicationContainer, Time> 
@@ -522,6 +549,47 @@ delayTrace(Ptr<OutputStreamWrapper> stream,
 }
 
 void
+TxPacketTraceCallback(Ptr<OutputStreamWrapper> stream,
+                      std::string context,
+                      GnbPhyPacketCountParameter param)
+{
+    if (stream == nullptr || stream->GetStream() == nullptr || !param.m_isTx)
+    {
+        return;
+    }
+
+    (void)context;
+
+    const double nowSeconds = Simulator::Now().GetNanoSeconds() / 1e9;
+    *stream->GetStream() << nowSeconds << "\t"
+                         << "DL"
+                         << "\t" << param.m_cellId << "\t" << param.m_subframeno << "\t"
+                         << param.m_noBytes << std::endl;
+}
+
+void
+RsrpRsrqTraceCallback(Ptr<OutputStreamWrapper> stream,
+                      std::string context,
+                      uint16_t rnti,
+                      uint16_t measuredCellId,
+                      double rsrp,
+                      double rsrq,
+                      bool isServingCell,
+                      uint8_t bwpId)
+{
+    if (stream == nullptr || stream->GetStream() == nullptr)
+    {
+        return;
+    }
+
+    const auto ids = MakeUeTraceIdsFromContext(context);
+    *stream->GetStream() << Simulator::Now().GetSeconds() << "\t" << ids.ueId << "\t" << ids.imsi
+                         << "\t" << ids.cellId << "\t" << measuredCellId << "\t"
+                         << static_cast<uint32_t>(bwpId) << "\t" << rnti << "\t" << rsrp << "\t"
+                         << rsrq << "\t" << static_cast<uint32_t>(isServingCell) << std::endl;
+}
+
+void
 rttTrace(Ptr<OutputStreamWrapper> stream,
          std::string context,
          Ptr<const Packet> packet,
@@ -631,6 +699,50 @@ FragmentRx (Ptr<OutputStreamWrapper> stream, std::string context,
         // so many fragments could be scheduled together  
         << std::endl;
 }    
+
+void
+GnbBsrTrace(Ptr<OutputStreamWrapper> stream,
+            std::string path,
+            const SfnSf sfn,
+            uint16_t nodeId,
+            uint16_t rnti,
+            uint8_t bwpId,
+            Ptr<const NrControlMessage> msg)
+{
+    if (stream == nullptr || msg == nullptr)
+    {
+        return;
+    }
+
+    (void)path;
+
+    if (msg->GetMessageType() != NrControlMessage::BSR)
+    {
+        return;
+    }
+
+    Ptr<NrBsrMessage> bsrMsg = DynamicCast<NrBsrMessage>(ConstCast<NrControlMessage>(msg));
+    if (bsrMsg == nullptr)
+    {
+        return;
+    }
+
+    const MacCeElement bsr = bsrMsg->GetBsr();
+    const auto& bufferStatus = bsr.m_macCeValue.m_bufferStatus;
+    const double nowSeconds = Simulator::Now().GetSeconds();
+
+    for (size_t lcg = 0; lcg < bufferStatus.size(); ++lcg)
+    {
+        const uint8_t level = bufferStatus[lcg];
+        const uint32_t bytes = nr::BufferSizeLevelBsr::BsrId2BufferSize(level);
+        *stream->GetStream() << nowSeconds << "\t" << nodeId << "\t"
+                             << static_cast<uint32_t>(bwpId) << "\t" << rnti << "\t"
+                             << sfn.GetFrame() << "\t"
+                             << static_cast<uint32_t>(sfn.GetSubframe()) << "\t"
+                             << static_cast<uint32_t>(sfn.GetSlot()) << "\t" << lcg << "\t"
+                             << static_cast<uint32_t>(level) << "\t" << bytes << std::endl;
+    }
+}
     
 /***********************************************
  * Install client applications
@@ -731,6 +843,40 @@ void CreateTraceFiles (void)
         *burstRxStream->GetStream()
               << "tstamp_us\t" << "ueId\t" << "IMSI\t" << "cellId\t"
               << "burstSeqNum\t" << "burstSize\t" << "numFragsInBurst" << std::endl;
+    }
+    if (global_params.traces)
+    {
+        txPacketTraceStream = traceHelper.CreateFileStream("TxPacketTrace.txt");
+        *txPacketTraceStream->GetStream()
+            << "Time(s)\t"
+            << "direction\t"
+            << "cellId\t"
+            << "subframe\t"
+            << "bytes" << std::endl;
+        rsrpRsrqStream = traceHelper.CreateFileStream("RsrpRsrqTrace.txt");
+        *rsrpRsrqStream->GetStream()
+            << "Time(s)\t"
+            << "ueId\t"
+            << "IMSI\t"
+            << "servingCellId\t"
+            << "measuredCellId\t"
+            << "bwpId\t"
+            << "RNTI\t"
+            << "RSRP(dBm)\t"
+            << "RSRQ(dB)\t"
+            << "ServingCellMeasurement" << std::endl;
+        gnbBsrStream = traceHelper.CreateFileStream("GnbBsrTrace.txt");
+        *gnbBsrStream->GetStream()
+            << "Time(s)\t"
+            << "nodeId\t"
+            << "bwpId\t"
+            << "rnti\t"
+            << "frame\t"
+            << "subframe\t"
+            << "slot\t"
+            << "lcg\t"
+            << "bsrLevel\t"
+            << "queueBytes" << std::endl;
     }
 
 }    

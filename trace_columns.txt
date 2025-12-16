@@ -13,6 +13,10 @@ tstamp_us, ueId, IMSI, cellId, burstSeqNum, burstSize, numFragsInBurst, fragSeqN
 vrBurst_trace.txt
 tstamp_us, ueId, IMSI, cellId, burstSeqNum, burstSize, numFragsInBurst
 
+--------------------------------------------------------------------------------------
+NR generated traces 
+--------------------------------------------------------------------------------------
+
 DlCtrlSinr.txt
 Time, CellId, RNTI, BWPId, SINR(dB)
 
@@ -70,8 +74,17 @@ start(s), end(s), CellId, IMSI, RNTI, LCID, nTxPDUs, TxBytes, nRxPDUs, RxBytes, 
 RxPacketTrace.txt
 Time, direction, frame, subframe, slot, firstSymbol, nSymbol, cellId, bwpId, rnti, tbSize, mcs, rank, rv, SINR(dB), CQI, corrupt, TBler
 
+TxPacketTrace.txt
+Time(s), direction, cellId, subframe, bytes
+
+RsrpRsrqTrace.txt
+Time(s), ueId, IMSI, servingCellId, measuredCellId, bwpId, RNTI, RSRP(dBm), RSRQ(dB), ServingCellMeasurement
+
 RxedGnbMacCtrlMsgsTrace.txt
 Time, Entity, Frame, Subframe, Slot, VarTTI, nodeId, RNTI, bwpId, MsgType
+
+GnbBsrTrace.txt
+Time(s), nodeId, bwpId, rnti, frame, subframe, slot, lcg, bsrLevel, queueBytes
 
 RxedGnbPhyCtrlMsgsTrace.txt
 Time, Entity, Frame, Subframe, Slot, nodeId, RNTI, bwpId, MsgType

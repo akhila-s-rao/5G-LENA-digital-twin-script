@@ -115,6 +115,12 @@ void CellularNetwork(const Parameters& params)
     
     // Keep a copy for helper routines that still read global parameters/traces
     global_params = params;
+    g_rntiToImsi.clear();
+    g_rntiToCellId.clear();
+    g_cellBwpNumRbPerRbg.clear();
+    dlMacStatsStream = nullptr;
+    ulMacStatsStream = nullptr;
+    srsSinrStream = nullptr;
 
     // Set buffer sizes
     Config::SetDefault ("ns3::NrRlcUm::MaxTxBufferSize", UintegerValue (params.rlcTxBuffSize)); 
@@ -122,6 +128,10 @@ void CellularNetwork(const Parameters& params)
     Config::SetDefault ("ns3::TcpSocket::SndBufSize", UintegerValue (params.tcpUdpBuffSize));
     Config::SetDefault ("ns3::TcpSocket::RcvBufSize", UintegerValue (params.tcpUdpBuffSize));
     Config::SetDefault ("ns3::UdpSocket::RcvBufSize", UintegerValue (params.tcpUdpBuffSize));
+    Config::SetDefault("ns3::NrMacSchedulingStats::DlOutputFilename",
+                       StringValue("NrDlMacStats.raw"));
+    Config::SetDefault("ns3::NrMacSchedulingStats::UlOutputFilename",
+                       StringValue("NrUlMacStats.raw"));
     
     
     // Create user created trace files with corresponding column names
@@ -343,6 +353,8 @@ void CellularNetwork(const Parameters& params)
 
     NetDeviceContainer gnbNetDev = nrHelper->InstallGnbDevice(gnbNodes, allBwps);
     NetDeviceContainer ueNetDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
+    InitializeCellBwpNumRbPerRbg(gnbNetDev);
+    SetupSrsSinrLogging(gnbNetDev, nrHelper);
     const uint16_t echoPortNum = 9;
     const uint16_t ulDelayPortNum = 17000;
     const uint16_t dlDelayPortNum = 18000;
@@ -384,7 +396,7 @@ void CellularNetwork(const Parameters& params)
      */
 
     // Get the first netdevice (gnbNetDev.Get (0)) and the first bandwidth part (0)
-    Ptr<NrGnbPhy> gnbPhy0 = NrHelper::GetGnbPhy(gnbNetDev.Get(0), 0);
+    Ptr<NrGnbPhy> gnbPhy0 = nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0);
     gnbPhy0->SetAttribute("Pattern", StringValue(params.tddPattern));
     gnbPhy0->SetAttribute("Numerology", UintegerValue(params.numerologyBwp1));
     gnbPhy0->SetAttribute("TxPower", DoubleValue(params.BsTxPower));
@@ -606,16 +618,34 @@ void CellularNetwork(const Parameters& params)
     // enable the RAN traces provided by the NR module
     if (params.traces == true) 
     {
-          nrHelper->EnableTraces ();
-          Config::Connect("/NodeList/*/DeviceList/*/BandwidthPartMap/*/NrGnbPhy/UlSinrTrace",
-                          MakeBoundCallback(&NrPhyRxTrace::UlSinrTraceCallback,
-                                            nrHelper->GetPhyRxTrace()));
+          // Custom selection of NR helper traces (mirrors EnableTraces()).
+          // nrHelper->EnableDlDataPhyTraces(); // Uncomment to log DlDataSinr.txt
+          nrHelper->EnableDlCtrlPhyTraces();
+          nrHelper->EnableUlPhyTraces();
+          nrHelper->EnableRlcSimpleTraces();
+          nrHelper->EnableRlcE2eTraces();
+          nrHelper->EnablePdcpSimpleTraces();
+          nrHelper->EnablePdcpE2eTraces();
+          nrHelper->EnableDlMacSchedTraces();
+          nrHelper->EnableUlMacSchedTraces();
+          // nrHelper->EnablePathlossTraces(); // Uncomment to log DlPathlossTrace/UlPathlossTrace
+          // nrHelper->EnableGnbPhyCtrlMsgsTraces(); // Uncomment to log Txed/RxedGnbPhyCtrlMsgsTrace
+          // nrHelper->EnableGnbMacCtrlMsgsTraces(); // Uncomment to log RxedGnbMacCtrlMsgsTrace (and Txed)
+          // nrHelper->EnableUePhyCtrlMsgsTraces(); // Uncomment to log Txed/RxedUePhyCtrlMsgsTrace and RxedUePhyDlDciTrace
+          // nrHelper->EnableUeMacCtrlMsgsTraces(); // Uncomment to log Txed/RxedUeMacCtrlMsgsTrace
+
           Config::Connect("/NodeList/*/DeviceList/*/BandwidthPartMap/*/NrGnbPhy/SpectrumPhy/TxPacketTraceGnb",
                           MakeBoundCallback(&TxPacketTraceCallback, txPacketTraceStream));
           Config::Connect("/NodeList/*/DeviceList/*/ComponentCarrierMapUe/*/NrUePhy/ReportUeMeasurements",
                           MakeBoundCallback(&RsrpRsrqTraceCallback, rsrpRsrqStream));
           Config::Connect("/NodeList/*/DeviceList/*/BandwidthPartMap/*/NrGnbMac/GnbMacRxedCtrlMsgsTrace",
                           MakeBoundCallback(&GnbBsrTrace, gnbBsrStream));
+          SetupDlMacPrbLogging();
+          SetupUlMacPrbLogging();
+          Config::Connect("/NodeList/*/DeviceList/*/BandwidthPartMap/*/NrGnbPhy/GnbPhyTxedCtrlMsgsTrace",
+                          MakeCallback(&DlDciTrace));
+          Config::Connect("/NodeList/*/DeviceList/*/BandwidthPartMap/*/NrGnbPhy/GnbPhyTxedCtrlMsgsTrace",
+                          MakeCallback(&UlDciTrace));
     }
 
     // enable packet tracing from the application layer 

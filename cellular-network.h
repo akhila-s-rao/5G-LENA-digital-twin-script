@@ -22,10 +22,15 @@
 #include <ostream>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <filesystem>
+#include <sstream>
 #include "ns3/core-module.h"
 #include "ns3/config-store.h"
+#include "ns3/config.h"
 #include "ns3/network-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/internet-apps-module.h"
@@ -39,8 +44,11 @@
 #include "ns3/inet-socket-address.h"
 #include "ns3/nr-ue-net-device.h"
 #include "ns3/nr-gnb-net-device.h"
+#include "ns3/nr-gnb-mac.h"
+#include "ns3/nr-gnb-rrc.h"
 #include "ns3/nr-ue-rrc.h"
 #include "ns3/nr-eps-bearer.h"
+#include "ns3/nr-spectrum-phy.h"
 #include "ns3/seq-ts-size-frag-header.h"
 #include <iomanip>
 #include "ns3/log.h"
@@ -52,6 +60,8 @@
 #define CELLULAR_NETWORK_FUNCTION_H
 
 namespace ns3 {
+
+class NrHelper;
 
 // Contains all parameters we are setting. Command line user settable parameters are included in cellular-netwokr-user.cc
 // The rest are still set here but not user settable. 
@@ -220,8 +230,14 @@ Ptr<OutputStreamWrapper> simInfoStream;
 Ptr<OutputStreamWrapper> txPacketTraceStream;
 Ptr<OutputStreamWrapper> rsrpRsrqStream;
 Ptr<OutputStreamWrapper> gnbBsrStream;
+Ptr<OutputStreamWrapper> dlMacStatsStream;
+Ptr<OutputStreamWrapper> ulMacStatsStream;
+Ptr<OutputStreamWrapper> srsSinrStream;
 std::unordered_map<uint16_t, uint32_t> g_rttNextSeqPerUe;
 std::unordered_map<uint32_t, uint16_t> g_nodeIdToUeId;
+std::unordered_map<uint16_t, uint64_t> g_rntiToImsi;
+std::unordered_map<uint16_t, uint16_t> g_rntiToCellId;
+std::unordered_map<uint32_t, uint32_t> g_cellBwpNumRbPerRbg;
 #else
 extern NodeContainer gnbNodes;
 extern NodeContainer ueNodes;
@@ -238,9 +254,65 @@ extern Ptr<OutputStreamWrapper> simInfoStream;
 extern Ptr<OutputStreamWrapper> txPacketTraceStream;
 extern Ptr<OutputStreamWrapper> rsrpRsrqStream;
 extern Ptr<OutputStreamWrapper> gnbBsrStream;
+extern Ptr<OutputStreamWrapper> dlMacStatsStream;
+extern Ptr<OutputStreamWrapper> ulMacStatsStream;
+extern Ptr<OutputStreamWrapper> srsSinrStream;
 extern std::unordered_map<uint16_t, uint32_t> g_rttNextSeqPerUe;
 extern std::unordered_map<uint32_t, uint16_t> g_nodeIdToUeId;
+extern std::unordered_map<uint16_t, uint64_t> g_rntiToImsi;
+extern std::unordered_map<uint16_t, uint16_t> g_rntiToCellId;
+extern std::unordered_map<uint32_t, uint32_t> g_cellBwpNumRbPerRbg;
 #endif
+
+
+inline uint32_t
+ComposeCellBwpKey(uint16_t cellId, uint8_t bwpId)
+{
+    return (static_cast<uint32_t>(cellId) << 16) | bwpId;
+}
+
+inline uint64_t
+ResolveImsiFromPath(const std::string& path, uint16_t rnti)
+{
+    if (rnti == 0)
+    {
+        return 0;
+    }
+
+    auto it = g_rntiToImsi.find(rnti);
+    if (it != g_rntiToImsi.end() && it->second != 0)
+    {
+        return it->second;
+    }
+
+    auto pos = path.find("/BandwidthPartMap");
+    if (pos == std::string::npos)
+    {
+        return 0;
+    }
+
+    std::ostringstream ueMapPath;
+    ueMapPath << path.substr(0, pos) << "/NrGnbRrc/UeMap/" << rnti;
+    Config::MatchContainer match = Config::LookupMatches(ueMapPath.str());
+    if (match.GetN() == 0)
+    {
+        return 0;
+    }
+
+    Ptr<NrUeManager> ueManager = match.Get(0)->GetObject<NrUeManager>();
+    if (ueManager == nullptr)
+    {
+        return 0;
+    }
+
+    uint64_t imsi = ueManager->GetImsi();
+    g_rntiToImsi[rnti] = imsi;
+    // `NrUeManager` does not expose the serving cell identifier, therefore the
+    // RNTI-to-cell mapping must continue to come from the RRC connection traces.
+    // Avoid adding calls like ueManager->GetCellId()/GetAssociatedCellId()
+    // because those APIs do not exist in ns-3's NR module.
+    return imsi;
+}
 
 
 /***************************
@@ -323,7 +395,25 @@ InstallDlDelayTrafficApps (const Ptr<Node> &ue,
              const Ptr<UniformRandomVariable> &x,
              Time appGenerationTime);
 void CreateTraceFiles (void);
-    
+void InitializeCellBwpNumRbPerRbg(const NetDeviceContainer& gnbNetDev);
+void SetupDlMacPrbLogging();
+void SetupUlMacPrbLogging();
+void SetupSrsSinrLogging(const NetDeviceContainer& gnbNetDev, Ptr<NrHelper> helper);
+std::string DciTypeToString(DciInfoElementTdma::VarTtiType type);
+void DlDciTrace(std::string path,
+                const SfnSf sfn,
+                uint16_t cellId,
+                uint16_t rnti,
+                uint8_t bwpId,
+                Ptr<const NrControlMessage> msg);
+void UlDciTrace(std::string path,
+                const SfnSf sfn,
+                uint16_t cellId,
+                uint16_t rnti,
+                uint8_t bwpId,
+                Ptr<const NrControlMessage> msg);
+void SrsSinrReport(uint16_t cellId, uint16_t rnti, double sinrLinear);
+
 /***************************
  * Function Definitions
  ***************************/
@@ -452,6 +542,8 @@ NotifyConnectionEstablishedEnb (std::string context, uint64_t imsi,
             << " with UE IMSI " << imsi
             << " RNTI " << rnti
             << std::endl;
+  g_rntiToImsi[rnti] = imsi;
+  g_rntiToCellId[rnti] = cellid;
 }
  
 
@@ -702,8 +794,8 @@ FragmentRx (Ptr<OutputStreamWrapper> stream, std::string context,
 
 void
 GnbBsrTrace(Ptr<OutputStreamWrapper> stream,
-            std::string path,
-            const SfnSf sfn,
+             std::string path,
+             const SfnSf sfn,
             uint16_t nodeId,
             uint16_t rnti,
             uint8_t bwpId,
@@ -742,6 +834,244 @@ GnbBsrTrace(Ptr<OutputStreamWrapper> stream,
                              << static_cast<uint32_t>(sfn.GetSlot()) << "\t" << lcg << "\t"
                              << static_cast<uint32_t>(level) << "\t" << bytes << std::endl;
     }
+}
+
+void
+InitializeCellBwpNumRbPerRbg(const NetDeviceContainer& gnbNetDev)
+{
+    g_cellBwpNumRbPerRbg.clear();
+    for (uint32_t i = 0; i < gnbNetDev.GetN(); ++i)
+    {
+        Ptr<NrGnbNetDevice> gnb = gnbNetDev.Get(i)->GetObject<NrGnbNetDevice>();
+        if (gnb == nullptr)
+        {
+            continue;
+        }
+        const uint16_t cellId = gnb->GetCellId();
+        const uint32_t bwps = gnb->GetCcMapSize();
+        for (uint32_t bwpId = 0; bwpId < bwps; ++bwpId)
+        {
+            Ptr<NrGnbMac> mac = gnb->GetMac(bwpId);
+            if (mac == nullptr)
+            {
+                continue;
+            }
+            g_cellBwpNumRbPerRbg[ComposeCellBwpKey(cellId, bwpId)] = mac->GetNumRbPerRbg();
+        }
+    }
+}
+
+void
+SetupDlMacPrbLogging()
+{
+    if (dlMacStatsStream != nullptr)
+    {
+        return;
+    }
+
+    dlMacStatsStream = traceHelper.CreateFileStream("NrDlMacStats.txt");
+    *dlMacStatsStream->GetStream()
+        << "time(s)\tcellId\tbwpId\tIMSI\tRNTI\tframe\tsframe\tslot\tsymStart\tnumSym\tharqId\tndi\t"
+           "rv\tmcs\ttbSize\tNumPrbs\tmsgType"
+        << std::endl;
+}
+
+void
+SetupUlMacPrbLogging()
+{
+    if (ulMacStatsStream != nullptr)
+    {
+        return;
+    }
+
+    ulMacStatsStream = traceHelper.CreateFileStream("NrUlMacStats.txt");
+    *ulMacStatsStream->GetStream()
+        << "time(s)\tcellId\tbwpId\tIMSI\tRNTI\tframe\tsframe\tslot\tsymStart\tnumSym\tharqId\tndi\t"
+           "rv\tmcs\ttbSize\tNumPrbs\tmsgType"
+        << std::endl;
+}
+
+void
+SetupSrsSinrLogging(const NetDeviceContainer& gnbNetDev, Ptr<NrHelper> helper)
+{
+    if (srsSinrStream == nullptr)
+    {
+        srsSinrStream = traceHelper.CreateFileStream("SrsSinrTrace.txt");
+        *srsSinrStream->GetStream() << "time(s)\tcellId\tRNTI\tSINR(dB)" << std::endl;
+    }
+
+    for (uint32_t i = 0; i < gnbNetDev.GetN(); ++i)
+    {
+        Ptr<NrGnbNetDevice> gnb = gnbNetDev.Get(i)->GetObject<NrGnbNetDevice>();
+        if (gnb == nullptr)
+        {
+            continue;
+        }
+
+        const uint32_t bwps = gnb->GetCcMapSize();
+        for (uint32_t bwpId = 0; bwpId < bwps; ++bwpId)
+        {
+            Ptr<NrGnbPhy> phy = helper->GetGnbPhy(gnbNetDev.Get(i), bwpId);
+            if (phy == nullptr)
+            {
+                continue;
+            }
+            Ptr<NrSpectrumPhy> spectrumPhy = phy->GetSpectrumPhy();
+            if (spectrumPhy == nullptr)
+            {
+                continue;
+            }
+            spectrumPhy->AddSrsSinrReportCallback(MakeCallback(&SrsSinrReport));
+        }
+    }
+}
+
+std::string
+DciTypeToString(DciInfoElementTdma::VarTtiType type)
+{
+    switch (type)
+    {
+    case DciInfoElementTdma::SRS:
+        return "SRS";
+    case DciInfoElementTdma::DATA:
+        return "DATA";
+    case DciInfoElementTdma::CTRL:
+        return "CTRL";
+    case DciInfoElementTdma::MSG3:
+        return "MSG3";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+void
+DlDciTrace(std::string path,
+           const SfnSf sfn,
+           uint16_t cellId,
+           uint16_t rnti,
+           uint8_t bwpId,
+           Ptr<const NrControlMessage> msg)
+{
+    (void)path;
+
+    if (msg == nullptr || msg->GetMessageType() != NrControlMessage::DL_DCI)
+    {
+        return;
+    }
+
+    Ptr<NrDlDciMessage> dlDciMsg = DynamicCast<NrDlDciMessage>(ConstCast<NrControlMessage>(msg));
+    if (dlDciMsg == nullptr)
+    {
+        return;
+    }
+
+    std::shared_ptr<DciInfoElementTdma> dci = dlDciMsg->GetDciInfoElement();
+    if (!dci)
+    {
+        return;
+    }
+    const uint16_t ueRnti = dci->m_rnti;
+    if (ueRnti == 0)
+    {
+        return;
+    }
+
+    const uint32_t key = ComposeCellBwpKey(cellId, bwpId);
+    auto rbIt = g_cellBwpNumRbPerRbg.find(key);
+    const uint32_t rbPerRbg = (rbIt != g_cellBwpNumRbPerRbg.end()) ? rbIt->second : 0;
+    uint32_t rbgCount = std::count(dci->m_rbgBitmask.begin(), dci->m_rbgBitmask.end(), true);
+    uint32_t numPrbs = rbgCount * rbPerRbg;
+    const std::string msgType = DciTypeToString(dci->m_type);
+
+    if (dlMacStatsStream == nullptr || dlMacStatsStream->GetStream() == nullptr)
+    {
+        return;
+    }
+
+    uint64_t imsi = ResolveImsiFromPath(path, ueRnti);
+
+    *dlMacStatsStream->GetStream()
+        << Simulator::Now().GetSeconds() << "\t" << cellId << "\t" << static_cast<uint32_t>(bwpId)
+        << "\t" << imsi << "\t" << ueRnti << "\t" << static_cast<uint32_t>(sfn.GetFrame()) << "\t"
+        << static_cast<uint32_t>(sfn.GetSubframe()) << "\t" << static_cast<uint32_t>(sfn.GetSlot())
+        << "\t" << static_cast<uint32_t>(dci->m_symStart) << "\t"
+        << static_cast<uint32_t>(dci->m_numSym) << "\t"
+        << static_cast<uint32_t>(dci->m_harqProcess) << "\t" << static_cast<uint32_t>(dci->m_ndi)
+        << "\t" << static_cast<uint32_t>(dci->m_rv) << "\t" << static_cast<uint32_t>(dci->m_mcs)
+        << "\t" << dci->m_tbSize << "\t" << numPrbs << "\t" << msgType << std::endl;
+}
+
+void
+UlDciTrace(std::string path,
+           const SfnSf sfn,
+           uint16_t cellId,
+           uint16_t rnti,
+           uint8_t bwpId,
+           Ptr<const NrControlMessage> msg)
+{
+    (void)path;
+
+    if (msg == nullptr || msg->GetMessageType() != NrControlMessage::UL_DCI)
+    {
+        return;
+    }
+
+    Ptr<NrUlDciMessage> ulDciMsg = DynamicCast<NrUlDciMessage>(ConstCast<NrControlMessage>(msg));
+    if (ulDciMsg == nullptr)
+    {
+        return;
+    }
+
+    std::shared_ptr<DciInfoElementTdma> dci = ulDciMsg->GetDciInfoElement();
+    if (!dci)
+    {
+        return;
+    }
+    const uint16_t ueRnti = dci->m_rnti;
+    if (ueRnti == 0)
+    {
+        return;
+    }
+
+    const uint32_t key = ComposeCellBwpKey(cellId, bwpId);
+    auto rbIt = g_cellBwpNumRbPerRbg.find(key);
+    const uint32_t rbPerRbg = (rbIt != g_cellBwpNumRbPerRbg.end()) ? rbIt->second : 0;
+    uint32_t rbgCount = std::count(dci->m_rbgBitmask.begin(), dci->m_rbgBitmask.end(), true);
+    uint32_t numPrbs = rbgCount * rbPerRbg;
+    const std::string msgType = DciTypeToString(dci->m_type);
+
+    if (ulMacStatsStream == nullptr || ulMacStatsStream->GetStream() == nullptr)
+    {
+        return;
+    }
+
+    uint64_t imsi = ResolveImsiFromPath(path, ueRnti);
+
+    *ulMacStatsStream->GetStream()
+        << Simulator::Now().GetSeconds() << "\t" << cellId << "\t" << static_cast<uint32_t>(bwpId)
+        << "\t" << imsi << "\t" << ueRnti << "\t" << static_cast<uint32_t>(sfn.GetFrame()) << "\t"
+        << static_cast<uint32_t>(sfn.GetSubframe()) << "\t" << static_cast<uint32_t>(sfn.GetSlot())
+        << "\t" << static_cast<uint32_t>(dci->m_symStart) << "\t"
+        << static_cast<uint32_t>(dci->m_numSym) << "\t"
+        << static_cast<uint32_t>(dci->m_harqProcess) << "\t" << static_cast<uint32_t>(dci->m_ndi)
+        << "\t" << static_cast<uint32_t>(dci->m_rv) << "\t" << static_cast<uint32_t>(dci->m_mcs)
+        << "\t" << dci->m_tbSize << "\t" << numPrbs << "\t" << msgType << std::endl;
+}
+
+void
+SrsSinrReport(uint16_t cellId, uint16_t rnti, double sinrLinear)
+{
+    if (srsSinrStream == nullptr || srsSinrStream->GetStream() == nullptr)
+    {
+        return;
+    }
+
+    // guard against log10(0)
+    const double clampedSinr = std::max(sinrLinear, 1e-12);
+    const double sinrDb = 10.0 * std::log10(clampedSinr);
+
+    *srsSinrStream->GetStream() << Simulator::Now().GetSeconds() << "\t" << cellId << "\t" << rnti
+                                << "\t" << sinrDb << std::endl;
 }
     
 /***********************************************
